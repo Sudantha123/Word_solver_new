@@ -59,30 +59,30 @@ class WordleUserBot:
         if not self.sticker_enabled:
             logger.info(f"Sticker sending disabled, skipping sticker for chat {chat_id}")
             return
-            
+
         try:
             from telethon.tl.functions.messages import GetStickerSetRequest
             from telethon.tl.types import InputStickerSetShortName
-            
+
             # Choose random sticker set
             sticker_set_name = random.choice(self.sticker_sets)
-            
+
             # Get stickers from the chosen set using correct API
             sticker_set = await self.client(GetStickerSetRequest(
                 stickerset=InputStickerSetShortName(short_name=sticker_set_name),
                 hash=0
             ))
-            
+
             if sticker_set and sticker_set.documents:
                 # Choose random sticker from the set
                 random_sticker = random.choice(sticker_set.documents)
-                
+
                 # Send the sticker
                 await self.client.send_file(chat_id, random_sticker)
                 logger.info(f"Sent random sticker from {sticker_set_name} to chat {chat_id}")
             else:
                 logger.warning(f"No stickers found in set {sticker_set_name}")
-                
+
         except Exception as e:
             logger.error(f"Error sending sticker to chat {chat_id}: {e}")
             # If sticker sending fails, continue with the game
@@ -136,9 +136,18 @@ class WordleUserBot:
         correct_patterns = [
             "Congrats! You guessed it correctly",
             "guessed correctly",
-            "Start with /new"
+            "Start with /new",
+            "Added",
+            "leaderboard"
         ]
-        return any(pattern in message_text for pattern in correct_patterns)
+        # Check if message contains correct guess indicators
+        contains_correct_pattern = any(pattern in message_text for pattern in correct_patterns)
+        
+        # More specific check for the exact pattern you mentioned
+        if "Congrats! You guessed it correctly" in message_text and "Added" in message_text and "leaderboard" in message_text and "Start with /new" in message_text:
+            return True
+            
+        return contains_correct_pattern
 
     def is_new_game_started_message(self, message_text):
         """Check if a new game was started"""
@@ -332,16 +341,72 @@ class WordleUserBot:
             return
 
         game_state = self.active_games[chat_id]
-        
-        # If game was just won, ignore all responses except new game confirmation
-        if game_state.get('game_won', False):
+
+        # IMMEDIATELY check if this is a correct guess message and stop all processing
+        if self.is_correct_guess_message(message_text):
+            logger.info(f"IMMEDIATE STOP: Correct guess detected in chat {chat_id}, stopping all processing")
+            
+            # IMMEDIATELY mark game as won and clear all data to prevent any further processing
+            game_state['game_won'] = True
+            game_state['clues'] = []
+            game_state['used_words'] = set()
+            game_state['processing_stopped'] = True  # Add flag to stop all processing
+
+            ultra_mode = game_state.get('ultra_mode', False)
+            fast_mode = game_state.get('fast_mode', False)
+
+            # Send sticker if enabled
+            if self.sticker_enabled:
+                if ultra_mode:
+                    # Ultra fast sticker animation
+                    choosing_delay = random.uniform(0.2, 0.8)
+                    async with self.client.action(chat_id, 'typing'):
+                        await asyncio.sleep(choosing_delay)
+                else:
+                    # Show choosing sticker animation (1.5 - 2.5 seconds)
+                    choosing_delay = random.uniform(1.5, 2.5)
+                    async with self.client.action(chat_id, 'typing'):
+                        await asyncio.sleep(choosing_delay)
+
+                # Send random sticker
+                await self.send_random_sticker(chat_id)
+
+            if ultra_mode:
+                # Ultra fast mode
+                await asyncio.sleep(random.uniform(0.2, 1.5))
+                async with self.client.action(chat_id, 'typing'):
+                    await asyncio.sleep(random.uniform(0.2, 0.8))
+            elif fast_mode:
+                # Add delay before starting new game
+                await asyncio.sleep(random.uniform(1.5, 3))
+                # Send typing action
+                async with self.client.action(chat_id, 'typing'):
+                    await asyncio.sleep(random.uniform(1, 2))
+            else:
+                # Add realistic delay before starting new game
+                await asyncio.sleep(random.uniform(3, 6))
+                # Send typing action
+                async with self.client.action(chat_id, 'typing'):
+                    await asyncio.sleep(random.uniform(1, 2))
+
+            # Start new game
+            await self.client.send_message(chat_id, "/new")
+            logger.info(f"Sent /new command for chat {chat_id}")
+
+            # Schedule automatic first guess in case we don't get confirmation
+            asyncio.create_task(self.ensure_new_game_starts(chat_id, ultra_mode, fast_mode))
+            return
+
+        # If game was just won or processing is stopped, ignore all responses except new game confirmation
+        if game_state.get('game_won', False) or game_state.get('processing_stopped', False):
             if self.is_new_game_started_message(message_text):
                 logger.info(f"New game confirmed after win in chat {chat_id}")
-                # Reset game state
+                # Reset game state completely
                 game_state['clues'] = []
                 game_state['used_words'] = set()
                 game_state['game_won'] = False
-                
+                game_state['processing_stopped'] = False  # Re-enable processing
+
                 ultra_mode = game_state.get('ultra_mode', False)
                 fast_mode = game_state.get('fast_mode', False)
 
@@ -368,15 +433,25 @@ class WordleUserBot:
                     await self.client.send_message(chat_id, first_guess)
                     logger.info(f"Started new game in chat {chat_id} with word: {first_guess}")
             else:
-                logger.info(f"Ignoring message in chat {chat_id} because game was just won: {message_text[:50]}...")
+                logger.info(f"Ignoring message in chat {chat_id} because game was just won or processing stopped: {message_text[:50]}...")
+            return
+
+        # Check if processing has been stopped
+        if game_state.get('processing_stopped', False):
+            logger.info(f"Processing stopped for chat {chat_id}, ignoring message")
             return
 
         # Check if word is invalid
         if self.is_invalid_word_message(message_text):
+            # Double-check if processing was stopped during the delay
+            if game_state.get('processing_stopped', False):
+                logger.info(f"Processing stopped for chat {chat_id} during invalid word handling")
+                return
+
             logger.info(f"Invalid word in chat {chat_id}, trying another word")
             ultra_mode = game_state.get('ultra_mode', False)
             fast_mode = game_state.get('fast_mode', False)
-            
+
             if ultra_mode:
                 await asyncio.sleep(random.uniform(0.2, 1.5))
                 async with self.client.action(chat_id, 'typing'):
@@ -391,6 +466,11 @@ class WordleUserBot:
                 # Send typing action
                 async with self.client.action(chat_id, 'typing'):
                     await asyncio.sleep(random.uniform(1, 2))
+
+            # Check again if processing was stopped during the delay
+            if game_state.get('processing_stopped', False):
+                logger.info(f"Processing stopped for chat {chat_id} during invalid word delay")
+                return
 
             # Try to get a better word based on current clues
             used_words = game_state.get('used_words', set())
@@ -403,10 +483,15 @@ class WordleUserBot:
 
         # Check if someone already guessed
         if self.is_already_guessed_message(message_text):
+            # Double-check if processing was stopped during the delay
+            if game_state.get('processing_stopped', False):
+                logger.info(f"Processing stopped for chat {chat_id} during already guessed handling")
+                return
+
             logger.info(f"Word already guessed in chat {chat_id}, trying another word")
             ultra_mode = game_state.get('ultra_mode', False)
             fast_mode = game_state.get('fast_mode', False)
-            
+
             if ultra_mode:
                 await asyncio.sleep(random.uniform(0.2, 1.5))
                 async with self.client.action(chat_id, 'typing'):
@@ -422,6 +507,11 @@ class WordleUserBot:
                 async with self.client.action(chat_id, 'typing'):
                     await asyncio.sleep(random.uniform(1, 2))
 
+            # Check again if processing was stopped during the delay
+            if game_state.get('processing_stopped', False):
+                logger.info(f"Processing stopped for chat {chat_id} during already guessed delay")
+                return
+
             # Try to get a better word based on current clues
             used_words = game_state.get('used_words', set())
             next_guess = self.get_best_guess(game_state['clues'], used_words)
@@ -433,59 +523,7 @@ class WordleUserBot:
                 logger.warning(f"Could not find new word for chat {chat_id}, all words may be used")
             return
 
-        # Check if guess was correct
-        if self.is_correct_guess_message(message_text):
-            logger.info(f"Correct guess in chat {chat_id}, immediately stopping all processing and starting new round")
-            
-            # IMMEDIATELY mark game as won to prevent any further guessing
-            game_state['game_won'] = True
-            game_state['clues'] = []
-            game_state['used_words'] = set()  # Reset used words for new game
-            
-            ultra_mode = game_state.get('ultra_mode', False)
-            fast_mode = game_state.get('fast_mode', False)
-            
-            # Send sticker if enabled
-            if self.sticker_enabled:
-                if ultra_mode:
-                    # Ultra fast sticker animation
-                    choosing_delay = random.uniform(0.2, 0.8)
-                    async with self.client.action(chat_id, 'typing'):
-                        await asyncio.sleep(choosing_delay)
-                else:
-                    # Show choosing sticker animation (1.5 - 2.5 seconds)
-                    choosing_delay = random.uniform(1.5, 2.5)
-                    async with self.client.action(chat_id, 'typing'):
-                        await asyncio.sleep(choosing_delay)
-                
-                # Send random sticker
-                await self.send_random_sticker(chat_id)
-            
-            if ultra_mode:
-                # Ultra fast mode
-                await asyncio.sleep(random.uniform(0.2, 1.5))
-                async with self.client.action(chat_id, 'typing'):
-                    await asyncio.sleep(random.uniform(0.2, 0.8))
-            elif fast_mode:
-                # Add delay before starting new game
-                await asyncio.sleep(random.uniform(1.5, 3))
-                # Send typing action
-                async with self.client.action(chat_id, 'typing'):
-                    await asyncio.sleep(random.uniform(1, 2))
-            else:
-                # Add realistic delay before starting new game
-                await asyncio.sleep(random.uniform(3, 6))
-                # Send typing action
-                async with self.client.action(chat_id, 'typing'):
-                    await asyncio.sleep(random.uniform(1, 2))
-
-            # Start new game
-            await self.client.send_message(chat_id, "/new")
-            logger.info(f"Sent /new command for chat {chat_id}")
-            
-            # Schedule automatic first guess in case we don't get confirmation
-            asyncio.create_task(self.ensure_new_game_starts(chat_id, ultra_mode, fast_mode))
-            return
+        
 
         # Check if new game started (after /new command)
         if self.is_new_game_started_message(message_text):
@@ -523,6 +561,11 @@ class WordleUserBot:
 
         # Check for Wordle result pattern
         if self.parse_wordle_result(message_text):
+            # Double-check if processing was stopped
+            if game_state.get('processing_stopped', False):
+                logger.info(f"Processing stopped for chat {chat_id} during Wordle result handling")
+                return
+
             logger.info(f"Got Wordle result in chat {chat_id}")
             clues = self.extract_clues_from_message(message_text)
             if clues:
@@ -531,7 +574,7 @@ class WordleUserBot:
 
             ultra_mode = game_state.get('ultra_mode', False)
             fast_mode = game_state.get('fast_mode', False)
-            
+
             if ultra_mode:
                 # Ultra fast mode
                 await asyncio.sleep(random.uniform(0.2, 1.5))
@@ -549,6 +592,11 @@ class WordleUserBot:
                 # Send typing action to show we're thinking
                 async with self.client.action(chat_id, 'typing'):
                     await asyncio.sleep(random.uniform(2, 4))
+
+            # Check again if processing was stopped during the delay
+            if game_state.get('processing_stopped', False):
+                logger.info(f"Processing stopped for chat {chat_id} during Wordle result delay")
+                return
 
             # Get next best guess using advanced analysis
             used_words = game_state.get('used_words', set())
@@ -585,12 +633,13 @@ class WordleUserBot:
                 'active': True,
                 'fast_mode': fast_mode,
                 'ultra_mode': ultra_mode,
-                'game_won': False
+                'game_won': False,
+                'processing_stopped': False
             }
 
             ultra_mode = self.active_games[chat_id].get('ultra_mode', False)
             fast_mode = self.active_games[chat_id].get('fast_mode', False)
-            
+
             if ultra_mode:
                 # Ultra fast timing
                 await asyncio.sleep(random.uniform(0.2, 1.5))
@@ -635,17 +684,18 @@ class WordleUserBot:
                 await asyncio.sleep(5)  # Wait 5 seconds for fast mode  
             else:
                 await asyncio.sleep(8)  # Wait 8 seconds for normal mode
-            
+
             # Check if game is still marked as won (meaning no new game started)
             if chat_id in self.active_games and self.active_games[chat_id].get('game_won', False):
                 logger.info(f"No new game confirmation received for chat {chat_id}, forcing new game start")
-                
+
                 # Reset game state
                 game_state = self.active_games[chat_id]
                 game_state['clues'] = []
                 game_state['used_words'] = set()
                 game_state['game_won'] = False
-                
+                game_state['processing_stopped'] = False
+
                 # Add small delay before first guess
                 if ultra_mode:
                     await asyncio.sleep(random.uniform(0.2, 1.5))
@@ -666,7 +716,7 @@ class WordleUserBot:
                     game_state['used_words'].add(first_guess.lower())
                     await self.client.send_message(chat_id, first_guess)
                     logger.info(f"Force started new game in chat {chat_id} with word: {first_guess}")
-                
+
         except Exception as e:
             logger.error(f"Error in ensure_new_game_starts for chat {chat_id}: {e}")
 
