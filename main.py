@@ -338,7 +338,7 @@ async def sticker_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not userbot:
         await update.message.reply_text("❌ Userbot is not running. Use /start_user first.")
         return
-    
+
     userbot.set_sticker_enabled(True)
     await update.message.reply_text("✅ Sticker sending enabled! Bot will send stickers after winning games.")
 
@@ -348,7 +348,7 @@ async def sticker_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not userbot:
         await update.message.reply_text("❌ Userbot is not running. Use /start_user first.")
         return
-    
+
     userbot.set_sticker_enabled(False)
     await update.message.reply_text("🚫 Sticker sending disabled! Bot will not send stickers after winning games.")
 
@@ -359,7 +359,7 @@ async def handle_group_selection(update: Update, context: ContextTypes.DEFAULT_T
 
     if query.data.startswith("select_group_"):
         chat_id = int(query.data.replace("select_group_", ""))
-        
+
         # Get group name for display
         userbot = get_userbot()
         if not userbot:
@@ -423,7 +423,7 @@ async def handle_group_selection(update: Update, context: ContextTypes.DEFAULT_T
             else:
                 speed_emoji = "🐢"
                 speed_name = "NORMAL"
-            
+
             await query.edit_message_text(
                 f"🎮 **Game Started!**\n\n"
                 f"Group: {group_name}\n"
@@ -446,7 +446,7 @@ async def handle_group_selection(update: Update, context: ContextTypes.DEFAULT_T
 
         try:
             groups = await userbot.get_groups()
-            
+
             if not groups:
                 await query.edit_message_text("❌ No groups found. Make sure the userbot is added to some groups.")
                 return
