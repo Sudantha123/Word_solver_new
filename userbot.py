@@ -142,11 +142,11 @@ class WordleUserBot:
         ]
         # Check if message contains correct guess indicators
         contains_correct_pattern = any(pattern in message_text for pattern in correct_patterns)
-        
+
         # More specific check for the exact pattern you mentioned
         if "Congrats! You guessed it correctly" in message_text and "Added" in message_text and "leaderboard" in message_text and "Start with /new" in message_text:
             return True
-            
+
         return contains_correct_pattern
 
     def is_new_game_started_message(self, message_text):
@@ -194,6 +194,35 @@ class WordleUserBot:
                 clues.append((guess_word, emoji_result))
 
         return clues
+
+    def get_last_word_from_message(self, message_text):
+        """Get the last word from a multi-line bot response"""
+        lines = message_text.strip().split('\n')
+
+        # Mathematical Sans-Serif Bold Capital Letters mapping
+        math_bold_to_regular = {
+            '𝗔': 'A', '𝗕': 'B', '𝗖': 'C', '𝗗': 'D', '𝗘': 'E', '𝗙': 'F', '𝗚': 'G', '𝗛': 'H',
+            '𝗜': 'I', '𝗝': 'J', '𝗞': 'K', '𝗟': 'L', '𝗠': 'M', '𝗡': 'N', '𝗢': 'O', '𝗣': 'P',
+            '𝗤': 'Q', '𝗥': 'R', '𝗦': 'S', '𝗧': 'T', '𝗨': 'U', '𝗩': 'V', '𝗪': 'W', '𝗫': 'X',
+            '𝗬': 'Y', '𝗭': 'Z'
+        }
+
+        # Look at lines from bottom to top to find the last word
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Pattern for Mathematical Sans-Serif Bold format
+            pattern_math_bold = r'([🟥🟨🟩]\s*){5}\s*([𝗔-𝗭]{5})'
+            match_math_bold = re.search(pattern_math_bold, line)
+
+            if match_math_bold:
+                math_bold_word = match_math_bold.group(2)
+                guess_word = ''.join(math_bold_to_regular.get(char, char) for char in math_bold_word).lower()
+                return guess_word
+
+        return None
 
     def filter_words_by_clues(self, clues):
         """Filter words based on all collected clues with advanced logic"""
@@ -345,11 +374,12 @@ class WordleUserBot:
         # IMMEDIATELY check if this is a correct guess message and stop all processing
         if self.is_correct_guess_message(message_text):
             logger.info(f"IMMEDIATE STOP: Correct guess detected in chat {chat_id}, stopping all processing")
-            
+
             # IMMEDIATELY mark game as won and clear all data to prevent any further processing
             game_state['game_won'] = True
             game_state['clues'] = []
             game_state['used_words'] = set()
+            game_state['last_guessed_word'] = None
             game_state['processing_stopped'] = True  # Add flag to stop all processing
 
             ultra_mode = game_state.get('ultra_mode', False)
@@ -405,6 +435,7 @@ class WordleUserBot:
                 game_state['clues'] = []
                 game_state['used_words'] = set()
                 game_state['game_won'] = False
+                game_state['last_guessed_word'] = None
                 game_state['processing_stopped'] = False  # Re-enable processing
 
                 ultra_mode = game_state.get('ultra_mode', False)
@@ -430,7 +461,8 @@ class WordleUserBot:
                 first_guess = self.get_best_guess([], set())
                 if first_guess:
                     game_state['used_words'].add(first_guess.lower())
-                    await self.client.send_message(chat_id, first_guess)
+                    game_state['last_guessed_word'] = first_guess.lower()
+                    await self.client.send_message(chat_id, first_guess.capitalize())
                     logger.info(f"Started new game in chat {chat_id} with word: {first_guess}")
             else:
                 logger.info(f"Ignoring message in chat {chat_id} because game was just won or processing stopped: {message_text[:50]}...")
@@ -477,7 +509,8 @@ class WordleUserBot:
             next_guess = self.get_best_guess(game_state['clues'], used_words)
             if next_guess and next_guess.lower() not in used_words:
                 game_state.setdefault('used_words', set()).add(next_guess.lower())
-                await self.client.send_message(chat_id, next_guess)
+                game_state['last_guessed_word'] = next_guess.lower()
+                await self.client.send_message(chat_id, next_guess.capitalize())
                 logger.info(f"Sent new word after invalid: {next_guess}")
             return
 
@@ -517,13 +550,14 @@ class WordleUserBot:
             next_guess = self.get_best_guess(game_state['clues'], used_words)
             if next_guess and next_guess.lower() not in used_words:
                 game_state.setdefault('used_words', set()).add(next_guess.lower())
-                await self.client.send_message(chat_id, next_guess)
+                game_state['last_guessed_word'] = next_guess.lower()
+                await self.client.send_message(chat_id, next_guess.capitalize())
                 logger.info(f"Sent new word after already guessed: {next_guess}")
             else:
                 logger.warning(f"Could not find new word for chat {chat_id}, all words may be used")
             return
 
-        
+
 
         # Check if new game started (after /new command)
         if self.is_new_game_started_message(message_text):
@@ -555,7 +589,8 @@ class WordleUserBot:
             first_guess = self.get_best_guess([], set())
             if first_guess:
                 game_state['used_words'].add(first_guess.lower())
-                await self.client.send_message(chat_id, first_guess)
+                game_state['last_guessed_word'] = first_guess.lower()
+                await self.client.send_message(chat_id, first_guess.capitalize())
                 logger.info(f"Started new game in chat {chat_id} with word: {first_guess}")
             return
 
@@ -566,7 +601,20 @@ class WordleUserBot:
                 logger.info(f"Processing stopped for chat {chat_id} during Wordle result handling")
                 return
 
-            logger.info(f"Got Wordle result in chat {chat_id}")
+            # Check if the last word in the response matches our last guessed word
+            last_word_in_response = self.get_last_word_from_message(message_text)
+            last_guessed_word = game_state.get('last_guessed_word')
+
+            if last_word_in_response and last_guessed_word:
+                if last_word_in_response.lower() != last_guessed_word.lower():
+                    logger.info(f"Ignoring response in chat {chat_id}: last word '{last_word_in_response}' doesn't match our guess '{last_guessed_word}'")
+                    return
+            elif last_word_in_response and not last_guessed_word:
+                # If we don't have a last guessed word tracked, this might be from another user
+                logger.info(f"Ignoring response in chat {chat_id}: no last guessed word tracked, response word: '{last_word_in_response}'")
+                return
+
+            logger.info(f"Got valid Wordle result in chat {chat_id} for our word: {last_guessed_word}")
             clues = self.extract_clues_from_message(message_text)
             if clues:
                 game_state['clues'].extend(clues)
@@ -603,8 +651,9 @@ class WordleUserBot:
             next_guess = self.get_best_guess(game_state['clues'], used_words)
             if next_guess and next_guess.lower() not in used_words:
                 game_state.setdefault('used_words', set()).add(next_guess.lower())
+                game_state['last_guessed_word'] = next_guess.lower()
                 logger.info(f"Next guess for chat {chat_id}: {next_guess}")
-                await self.client.send_message(chat_id, next_guess)
+                await self.client.send_message(chat_id, next_guess.capitalize())
             else:
                 logger.warning(f"Could not generate new guess for chat {chat_id}")
 
@@ -634,7 +683,8 @@ class WordleUserBot:
                 'fast_mode': fast_mode,
                 'ultra_mode': ultra_mode,
                 'game_won': False,
-                'processing_stopped': False
+                'processing_stopped': False,
+                'last_guessed_word': None
             }
 
             ultra_mode = self.active_games[chat_id].get('ultra_mode', False)
@@ -662,7 +712,8 @@ class WordleUserBot:
             first_guess = self.get_best_guess([], set())
             if first_guess:
                 self.active_games[chat_id]['used_words'].add(first_guess.lower())
-                await self.client.send_message(chat_id, first_guess)
+                self.active_games[chat_id]['last_guessed_word'] = first_guess.lower()
+                await self.client.send_message(chat_id, first_guess.capitalize())
                 logger.info(f"Started game in chat {chat_id} with word: {first_guess}")
 
         except Exception as e:
@@ -694,6 +745,7 @@ class WordleUserBot:
                 game_state['clues'] = []
                 game_state['used_words'] = set()
                 game_state['game_won'] = False
+                game_state['last_guessed_word'] = None
                 game_state['processing_stopped'] = False
 
                 # Add small delay before first guess
@@ -714,7 +766,8 @@ class WordleUserBot:
                 first_guess = self.get_best_guess([], set())
                 if first_guess:
                     game_state['used_words'].add(first_guess.lower())
-                    await self.client.send_message(chat_id, first_guess)
+                    game_state['last_guessed_word'] = first_guess.lower()
+                    await self.client.send_message(chat_id, first_guess.capitalize())
                     logger.info(f"Force started new game in chat {chat_id} with word: {first_guess}")
 
         except Exception as e:
