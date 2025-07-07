@@ -234,52 +234,9 @@ class WordleUserBot:
         for word in self.word_list:
             is_valid = True
 
-            # Track letters we know are in the word and their constraints
-            required_letters = set()
-            forbidden_letters = set()
-            position_constraints = {}  # position -> required letter
-            position_forbidden = {}    # position -> set of forbidden letters
-
-            # Analyze all clues first
+            # Process each clue individually to check if the word matches
             for guess_word, emoji_result in clues:
-                for i, (guess_char, emoji) in enumerate(zip(guess_word, emoji_result)):
-                    if emoji == '🟩':  # Green - correct letter, correct position
-                        position_constraints[i] = guess_char
-                        required_letters.add(guess_char)
-                    elif emoji == '🟨':  # Yellow - correct letter, wrong position
-                        required_letters.add(guess_char)
-                        if i not in position_forbidden:
-                            position_forbidden[i] = set()
-                        position_forbidden[i].add(guess_char)
-                    elif emoji == '🟥':  # Red - letter not in word
-                        # Only mark as forbidden if it's not required elsewhere
-                        if guess_char not in required_letters:
-                            forbidden_letters.add(guess_char)
-
-            # Check if word satisfies all constraints
-            # 1. Check required positions (green letters)
-            for pos, required_char in position_constraints.items():
-                if word[pos] != required_char:
-                    is_valid = False
-                    break
-
-            if not is_valid:
-                continue
-
-            # 2. Check forbidden letters (red letters that aren't required)
-            word_letters = set(word)
-            if forbidden_letters & word_letters:
-                is_valid = False
-                continue
-
-            # 3. Check required letters are present (yellow letters)
-            if not required_letters.issubset(word_letters):
-                is_valid = False
-                continue
-
-            # 4. Check position forbidden constraints (yellow letters can't be in wrong spots)
-            for pos, forbidden_chars in position_forbidden.items():
-                if word[pos] in forbidden_chars:
+                if not self.word_matches_clue(word, guess_word, emoji_result):
                     is_valid = False
                     break
 
@@ -287,6 +244,47 @@ class WordleUserBot:
                 valid_words.append(word)
 
         return valid_words
+
+    def word_matches_clue(self, word, guess_word, emoji_result):
+        """Check if a word matches a single guess clue"""
+        # Create a copy of the word to track letter usage
+        word_chars = list(word)
+        guess_chars = list(guess_word)
+        
+        # First pass: handle green letters (correct position)
+        for i, (guess_char, emoji) in enumerate(zip(guess_chars, emoji_result)):
+            if emoji == '🟩':  # Green - correct letter, correct position
+                if word_chars[i] != guess_char:
+                    return False
+                # Mark this position as used
+                word_chars[i] = None
+                guess_chars[i] = None
+
+        # Second pass: handle yellow and red letters
+        for i, (guess_char, emoji) in enumerate(zip(guess_chars, emoji_result)):
+            if guess_char is None:  # Already processed as green
+                continue
+                
+            if emoji == '🟨':  # Yellow - correct letter, wrong position
+                # Letter must be in the word but not at this position
+                if word[i] == guess_char:  # Can't be at this exact position
+                    return False
+                # Check if the letter exists elsewhere in the word
+                found = False
+                for j, word_char in enumerate(word_chars):
+                    if word_char == guess_char:
+                        word_chars[j] = None  # Mark as used
+                        found = True
+                        break
+                if not found:
+                    return False
+                    
+            elif emoji == '🟥':  # Red - letter not in word
+                # Check if this letter appears anywhere in the remaining word
+                if guess_char in word_chars:
+                    return False
+
+        return True
 
     def get_best_guess(self, clues, used_words=None):
         """Get the best next guess based on clues using advanced strategy"""
@@ -309,40 +307,38 @@ class WordleUserBot:
         if len(valid_words) == 1:
             return valid_words[0].upper()
 
-        # For first guess (no clues), use random word to avoid detection
+        # For first guess (no clues), use random word selection
         if not clues or len(clues) == 0:
-            remaining_words = [word for word in self.word_list if word.lower() not in {w.lower() for w in used_words}]
-            if remaining_words:
-                return random.choice(remaining_words).upper()
-
-        # If we have many options, prefer words with common letters and good coverage
-        if len(valid_words) > 50:
-            # Use high-frequency starting words for better elimination, but exclude used ones
-            common_starters = ['arose', 'adieu', 'audio', 'ourie', 'louie', 'storm', 'court', 'plant', 'slice', 'crane']
+            # Use a mix of strategic starting words and random words for variety
+            common_starters = ['arose', 'adieu', 'audio', 'ourie', 'louie', 'storm', 'court', 'plant', 'slice', 'crane',
+                             'slate', 'crate', 'trace', 'learn', 'stern', 'clear', 'heart', 'brain', 'train', 'sport']
             available_starters = [w for w in common_starters if w in self.word_list and w.lower() not in {word.lower() for word in used_words}]
-            if available_starters and len(clues) < 2:
-                return available_starters[0].upper()
+            
+            # 70% chance to use a strategic starter, 30% chance to use completely random word
+            if available_starters and random.random() < 0.7:
+                return random.choice(available_starters).upper()
+            else:
+                # Use completely random word for more variety
+                remaining_words = [word for word in self.word_list if word.lower() not in {w.lower() for w in used_words}]
+                if remaining_words:
+                    return random.choice(remaining_words).upper()
 
-        # Calculate letter frequencies in remaining words
+        # Use the same logic as main bot for word scoring
         letter_freq = self.get_letter_frequency(valid_words)
 
-        # Advanced scoring: consider letter uniqueness and position variety
         def advanced_score(word):
-            base_score = self.score_word(word, letter_freq)
-
-            # Bonus for words with unique letters (avoid repeated letters early)
+            score = 0
+            used_letters = set()
+            for char in word:
+                if char not in used_letters:
+                    score += letter_freq[char]
+                    used_letters.add(char)
+            
+            # Bonus for words with unique letters (avoid repeated letters)
             unique_letters = len(set(word))
             uniqueness_bonus = unique_letters * 10
-
-            # Bonus for common letter positions
-            position_bonus = 0
-            for i, char in enumerate(word):
-                # Count how many remaining words have this letter in this position
-                position_count = sum(1 for w in valid_words if w[i] == char)
-                if position_count > len(valid_words) * 0.1:  # If >10% of words have this letter here
-                    position_bonus += position_count
-
-            return base_score + uniqueness_bonus + position_bonus
+            
+            return score + uniqueness_bonus
 
         # Score all words and return the best one
         best_word = max(valid_words, key=advanced_score)
